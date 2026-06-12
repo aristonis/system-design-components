@@ -58,6 +58,7 @@ classDiagram
       +save(credential) void
       +find(ref) Credential
       +revoke(ref) void
+      +revokeAllFor(accountId, exceptRef) void
     }
     class AuditLog {
       <<interface>>
@@ -66,6 +67,29 @@ classDiagram
     class RateLimiter {
       <<interface>>
       +check(identity, ip) Decision
+    }
+    class PasswordManager {
+      +forgotPassword(identifier) void
+      +resetPassword(token, newPassword) void
+      +changePassword(accountId, current, newPassword) void
+    }
+    class ResetToken {
+      +id : OpaqueId
+      +accountId : OpaqueId
+      +tokenHash : Hash
+      +expiresAt : Time
+      +consumedAt : Time
+      +isUsable() bool
+    }
+    class ResetTokenStore {
+      <<interface>>
+      +save(token) void
+      +findUsableByHash(hash) ResetToken
+      +consume(ref) void
+    }
+    class Notifier {
+      <<interface>>
+      +sendResetToken(account, rawToken) void
     }
 
     Authenticator --> AccountRepository
@@ -82,6 +106,14 @@ classDiagram
     TokenIssuer ..> Token : creates
     Account "1" o-- "1..*" Identifier : login handles
     Account ..> PasswordHasher : uses
+    Account "1" o-- "0..*" ResetToken : recovery
+    PasswordManager --> AccountRepository
+    PasswordManager --> PasswordHasher
+    PasswordManager --> ResetTokenStore
+    PasswordManager --> Notifier
+    PasswordManager --> CredentialStore
+    PasswordManager --> AuditLog
+    PasswordManager --> RateLimiter
 ```
 
 Design notes:
@@ -95,3 +127,13 @@ Design notes:
 - **Login identifier:** `findByIdentifier` resolves an account by email / username / NID.
   Whether identifiers are stored inline (A) or in a separate table (B) is the
   implementer's choice — see `data-model.md`.
+- **Two services, shared ports:** `Authenticator` (register / login / logout / identify)
+  and `PasswordManager` (forgot / reset / change) are **siblings** in the same component.
+  `PasswordManager` reuses the *same* boundary ports plus two new ones — `ResetTokenStore`
+  and `Notifier`. Splitting keeps each within SRP instead of one 7-method engine.
+- **Reset token mirrors the bearer token:** stored **hashed** (`tokenHash`), the raw value
+  shown once and sent **out-of-band**; `isUsable()` = not expired **and** not consumed
+  (single-use).
+- **Revocation is reused, not reinvented:** reset / change call the same `CredentialStore`
+  the Authenticator uses — `revokeAllFor(accountId, exceptRef)` clears everything (reset)
+  or everything but the current credential (change).

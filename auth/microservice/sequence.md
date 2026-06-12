@@ -66,3 +66,53 @@ sequenceDiagram
 
 The second diagram is the whole point of Level 3: identity verification **scales with
 each service** and does not funnel back to a single auth datastore.
+
+## Forgot + Reset (async delivery, stateless revocation)
+
+```mermaid
+---
+title: Auth — Level 3 Forgot + Reset (async delivery, stateless revocation)
+---
+sequenceDiagram
+    autonumber
+    actor C as Client / BFF
+    participant GW as API Gateway
+    participant A as auth-service
+    participant DB as auth-db
+    participant Bus as Event bus
+    participant N as notification-service
+    participant O as other services (cutoff cache)
+
+    rect rgb(245,245,245)
+    Note over C,N: Forgot — out-of-band send is async (never blocks the response)
+    C->>GW: POST /forgot {identifier}
+    GW->>A: forgotPassword(identifier)
+    A->>DB: save reset token (hashed) if the account exists
+    A-->>Bus: publish SendResetToken {accountId, rawToken}
+    A-->>GW: generic ok
+    GW-->>C: 200 generic (no enumeration)
+    Bus-->>N: deliver
+    N-->>C: email / SMS with reset link
+    end
+
+    rect rgb(245,245,245)
+    Note over C,O: Reset — set hash, consume, then revoke stateless credentials
+    C->>GW: POST /reset {token, newPassword}
+    GW->>A: resetPassword(token, newPassword)
+    A->>DB: validate token (usable) + set new hash + consume
+    A->>DB: revoke ALL refresh tokens for the account
+    A->>DB: set credentials_valid_from = now
+    A-->>Bus: publish CredentialsRevoked {accountId, notBefore = now}
+    A-->>GW: 200 reset done — log in again
+    GW-->>C: 200
+    Bus-->>O: deliver
+    O->>O: cache cutoff[accountId] = notBefore (TTL = ACCESS_TTL)
+    Note over O: reject any JWT with iat < cutoff[sub] — old access tokens evicted
+    end
+```
+
+## Change password (delta)
+- Same revocation as reset, but **keeps the current device**: verify current password →
+  set new hash → revoke all refresh tokens → set `credentials_valid_from = now` and publish
+  `CredentialsRevoked` → then **re-issue** a fresh refresh + access pair for the current
+  session. Its `iat` is ≥ the cutoff, so it survives while every older token fails.

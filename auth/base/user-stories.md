@@ -1,8 +1,9 @@
 # Auth — User Stories & Requirements
 
-Functional stories (register / login / logout) plus non-functional requirements,
-shared by all three levels. Cross-cutting concerns (rate-limiting) are *referenced*,
-not defined here — see `context.md`.
+Functional stories (register / login / logout, plus password recovery & change) and
+non-functional requirements, shared by all three levels. Cross-cutting concerns
+(rate-limiting, out-of-band notification) are *referenced*, not defined here — see
+`context.md`.
 
 **Conventions:** story = *As a … I want … so that …*; acceptance criteria =
 *Given / When / Then*. Actors **User** and **Admin** share these stories and
@@ -50,6 +51,52 @@ used.*
   reuse of it → **401**.
 - Logout is written to the **audit log**.
 
+### US-4 — Forgot password (request a reset)
+*As a user who can't log in, I want to request a password reset with my identifier, so
+that I can regain access without knowing my old password.*
+
+- **Given** any identifier, **when** I request a reset, **then** I get the **same generic
+  response** (*"if that account exists, reset instructions have been sent"*) — the reply
+  **never reveals whether the account exists** (no enumeration).
+- **Given** an existing account, **when** I request a reset, **then** a **single-use,
+  time-limited** reset token is generated, stored **hashed**, and sent **out-of-band**
+  (email / SMS) — it is **never** returned in the HTTP response.
+- **Given** an unknown identifier, **when** I request a reset, **then** equivalent work is
+  done (**timing-safe**) and nothing is sent.
+- **Given** repeated requests, **when** the Rate-Limiting limit (per-identity **and**
+  per-IP) is exceeded, **then** further requests are rejected. *(Hard limit — this
+  endpoint sends messages and costs money.)*
+- Logged to the **audit log** (`password_reset_requested`).
+
+### US-5 — Reset password (consume the token)
+*As a user holding a valid reset token, I want to set a new password, so that I can log
+in again.*
+
+- **Given** a token that **exists, matches (timing-safe), is unexpired and unconsumed**,
+  and a policy-compliant new password, **when** I reset, **then** the password hash is
+  replaced, the token is **consumed (single-use)**, and **all** existing sessions/tokens
+  are **revoked**.
+- **Given** an unknown, expired, or already-used token, **when** I reset, **then** I get a
+  **generic** *"invalid or expired token"* error and nothing changes.
+- **Given** a new password failing policy, **when** I reset, **then** I get a validation
+  error and nothing changes.
+- **Given** a successful reset, **then** I am **not** auto-logged-in — I must log in fresh
+  *(config-overridable)*.
+- Logged to the **audit log** (`password_reset`).
+
+### US-6 — Change password (authenticated)
+*As an authenticated user, I want to change my password by confirming my current one, so
+that a stolen session alone cannot change it.*
+
+- **Given** my **correct current password** and a policy-compliant new one **different
+  from the current**, **when** I change it, **then** the hash is replaced and **all
+  other** sessions/tokens are revoked while **my current credential stays valid**.
+- **Given** an **incorrect current password**, **when** I change it, **then** I get a
+  generic error (**timing-safe**) and nothing changes.
+- **Given** a new password equal to the current one or failing policy, **when** I change
+  it, **then** I get a validation error and nothing changes.
+- Logged to the **audit log** (`password_changed`).
+
 ---
 
 ## Non-functional requirements
@@ -62,10 +109,14 @@ used.*
 | NFR-4 | Security | Public ids **opaque, non-enumerable** (no raw incremental ids). |
 | NFR-5 | Security | HTTPS only. Web: HttpOnly + Secure + SameSite cookies + CSRF. API: bearer token stored hashed, revocable. |
 | NFR-6 | Security | All input validated at the boundary. |
-| NFR-7 | Observability | Audit log for register, login (success/failure), logout. |
+| NFR-7 | Observability | Audit log for register, login (success/failure), logout, and password reset-request / reset / change. |
 | NFR-8 | Performance | p95 auth request < 200 ms under normal load. |
 | NFR-9 | Maintainability | One verify-credentials path; credential issuance is a per-channel strategy. |
 | NFR-10 | Config | Password policy and token/session lifetime read from **config**, not hardcoded. |
+| NFR-11 | Security | Reset tokens single-use, time-limited (config TTL), stored **hashed** at rest, delivered **out-of-band** only — never in a response body. |
+| NFR-12 | Security | Forgot-password is generic + timing-safe — **no account enumeration**; out-of-band send only when the account exists. |
+| NFR-13 | Security | Reset revokes **all** sessions/tokens; change-password revokes **all others** — containment after a credential change. |
+| NFR-14 | Security | Change-password **re-verifies the current password** (re-authentication), independent of the active session. |
 
 ---
 
@@ -74,9 +125,13 @@ used.*
 - **Rate-Limiting** — thresholds & buckets live in the `rate-limiting/` component;
   listed as a dependency in `context.md`.
 - **Password policy** — Auth-owned **config**; default *min 8 chars, no forced
-  composition*; breach-list check deferred. Value in config, not in code.
+  composition*; breach-list check deferred. Value in config, not in code. Reused by
+  register, reset, and change.
+- **Notifier (out-of-band)** — delivery of the reset link / OTP via email / SMS is owned
+  by a notification component; Auth mints the token and asks it to send. Referenced, not
+  built here.
 
 ## Deferred (out of base scope)
 
-- Reset password, email verification, 2FA, social login.
+- Email verification, 2FA, social login.
 - Authorization (roles/permissions) → separate `authorization/` component.

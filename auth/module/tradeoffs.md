@@ -9,6 +9,8 @@
   the core is untouched (OCP / DIP).
 - **Reusable** — the package drops into another host app by supplying adapters.
 - **Clear contract** — `AuthApi` is explicit, documented, and stable.
+- **Recovery is testable too** — a fake `Notifier` captures the token, so forgot → reset
+  (including "revoke all sessions") runs in a unit test with no mail server or DB.
 
 ## What it costs
 - **More ceremony** — ports, adapters, DTOs, and a composition root are extra moving
@@ -33,3 +35,6 @@
 - The driven ports are the seams that may move across the network — and the
   `CredentialStore`/session lookup is the one that pushes you toward **stateless tokens**
   so downstream services need not call Auth on every request.
+- The `Notifier` port is the natural **async seam** — at Level 3 it becomes a queue /
+  message publish, and the reset "revoke all credentials" step becomes the hard problem
+  once credentials are stateless tokens.

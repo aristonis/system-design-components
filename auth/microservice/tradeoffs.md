@@ -30,6 +30,15 @@
 - **Instant revocation** and a single, local "who is this" lookup.
 - **One place to debug.**
 
+## Password reset / change — the revocation lesson
+Reset/change is the sharpest illustration of L3's central trade-off. The stateful half
+(refresh tokens) revokes instantly; the stateless half (access JWTs) cannot. You buy back
+"instant" with either a **short access TTL** (eventual, simplest) or a per-account
+**cutoff distributed by event** (instant — but now reset/change has a *fan-out* to every
+service's cutoff cache, with its own consistency window). At L1 this was a single
+`DELETE`. That delta — one local delete vs. a distributed eviction — is the price of
+statelessness, and the whole reason to climb the ladder only when forced.
+
 ---
 
 ## The three levels at a glance (the journey)
@@ -43,6 +52,7 @@
 | "Who is this?" | local DB lookup | local port call | local JWT verify (stateless) |
 | Scale Auth alone | no | no | **yes** |
 | Revocation | instant | instant | eventual (short TTL) |
+| Revoke-all on reset/change | one DB delete | one DB delete | refresh instant + access via TTL / event cutoff |
 | Failure surface | in-process | in-process | network + partial failure |
 | Complexity | low | medium | high |
 | Best for | most products | shared/long-lived modules | a real forcing function |

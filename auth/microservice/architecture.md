@@ -16,13 +16,14 @@ flowchart TB
     Client["Client (SPA / mobile / BFF)"]
     GW["API Gateway"]
     subgraph Services["Independently deployable services"]
-      Auth["auth-service<br/>register / login / logout / refresh"]
+      Auth["auth-service<br/>register / login / logout / refresh<br/>forgot / reset / change"]
       Order["order-service"]
       Wallet["wallet-service"]
     end
-    AuthDB[("auth-db — private<br/>ACCOUNT · IDENTIFIER · REFRESH_TOKEN · AUTH_EVENT")]
+    AuthDB[("auth-db — private<br/>ACCOUNT · IDENTIFIER · REFRESH_TOKEN · PASSWORD_RESET · AUTH_EVENT")]
     Keys["Signing keys<br/>JWKS (public) endpoint"]
-    Bus(["Event bus (optional)<br/>UserRegistered …"])
+    Bus(["Event bus<br/>UserRegistered · SendResetToken · CredentialsRevoked"])
+    Notify["notification-service<br/>out-of-band email / SMS"]
 
     Client --> GW
     GW --> Auth
@@ -31,6 +32,9 @@ flowchart TB
     Auth --> AuthDB
     Auth --> Keys
     Auth -. publishes .-> Bus
+    Bus -. "SendResetToken" .-> Notify
+    Bus -. "CredentialsRevoked<br/>(cutoff cache)" .-> Order
+    Bus -. "CredentialsRevoked" .-> Wallet
     Order -. "validate JWT locally<br/>(public key, no call to auth)" .-> Keys
     Wallet -. "validate JWT locally" .-> Keys
 ```
@@ -88,6 +92,38 @@ A stateless JWT **cannot be instantly revoked**. Mitigations:
 - **Logout** revokes the refresh token and (optionally) denylists the current access
   `jti`.
 
+## Reset & change — revoking stateless credentials (the crux)
+
+Password **reset** must revoke *every* credential; **change** must revoke all but the
+current session. At L1/L2 that was a one-line DB delete. With stateless JWTs it splits in
+two:
+
+- **Refresh tokens are stateful** (rows in `auth-db`) → revoke directly:
+  `refreshTokens.revokeAllFor(accountId)`. No new access token can be minted.
+- **Access JWTs are stateless** → valid until `exp`. You cannot delete them.
+
+So "revoke now" becomes a choice of mechanism:
+
+| Mechanism | Instant? | Cost |
+|---|---|---|
+| **Short access TTL + refresh revoke** (default) | no — valid up to `ACCESS_TTL` (minutes) | none beyond a short window |
+| **Per-account cutoff** (`credentials_valid_from`, checked as `jwt.iat >= cutoff`) | yes | services must learn the cutoff — via a `CredentialsRevoked{accountId, notBefore}` event they cache (TTL = `ACCESS_TTL`), or a shared denylist store |
+| **`jti` denylist** | yes, per token | a shared fast store every validator consults until `exp` |
+
+**Recommended:** always revoke refresh tokens + keep `ACCESS_TTL` short; add the
+per-account cutoff (via `CredentialsRevoked`) when a security action like reset/change
+needs *instant* eviction. The event keeps validation **local** — each service applies the
+cutoff from its cache, with no per-request call to auth.
+
+**Change-password keeps the current session** by revoking everything, then **re-issuing**
+a fresh refresh + access pair for the current device — its `iat` is ≥ the cutoff, so it
+survives while every older token fails.
+
+**Out-of-band delivery is now async:** `forgotPassword` writes the reset row and
+**publishes a `SendResetToken` command** to the notification-service. A slow or failed
+mail send never blocks the API response, and auth-service does not depend on a mail server
+being up.
+
 ## Requirements revisited
 
 | Requirement | Level-3 status |
@@ -95,4 +131,6 @@ A stateless JWT **cannot be instantly revoked**. Mitigations:
 | **Horizontal scale (NFR-6)** | **fully met** — scale auth-service alone; validation has no central bottleneck (each service verifies locally). |
 | Latency (NFR-8) | login/refresh now incur a network hop; validation stays local and fast. |
 | Instant revocation | **weaker** — eventual, via short TTL + denylist. |
+| Reset token hashed + single-use + out-of-band (NFR-11) | met — `PASSWORD_RESET` in auth-db; delivery async via notification-service. |
+| Revoke on reset / change (NFR-13) | **partial/eventual** — refresh tokens revoked instantly; access tokens evicted via short TTL or a per-account cutoff event. |
 | Operational cost | **higher** — more services, key management, tracing, monitoring. |

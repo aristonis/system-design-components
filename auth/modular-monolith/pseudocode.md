@@ -80,5 +80,69 @@ function identify(request):
     return resolved.accountId
 ```
 
+## forgotPassword  (PasswordManager — generic + timing-safe, no enumeration)
+
+```
+function forgotPassword(identifier):
+    if not rateLimiter.check(identity = identifier, ip = currentIp()).allowed:
+        fail TooManyRequests()
+
+    account  = accounts.findByIdentifier(identifier)
+    rawToken = secureRandom()                          // high-entropy, shown once, sent out-of-band
+    if account is not null:
+        transaction:
+            resetTokens.save(ResetToken(
+                accountId  = account.id,
+                tokenHash  = hashToken(rawToken),      // stored hashed (fast hash)
+                expiresAt  = now() + RESET_TTL,        // from config
+                consumedAt = null))
+            audit.record(PASSWORD_RESET_REQUESTED, account.id)
+        notifier.sendResetToken(account, rawToken)     // AFTER commit — never inside the txn
+    // else: do equivalent work, send nothing (no enumeration)
+    return GenericOk()                                 // identical reply either way
+```
+
+## resetPassword  (consume the token — single-use)
+
+```
+function resetPassword(rawToken, newPassword):
+    record = resetTokens.findUsableByHash(hashToken(rawToken))  // not expired, not consumed
+    if record is null:
+        fail BadRequest("invalid or expired token")    // generic
+    if not passwordMeetsPolicy(newPassword):
+        fail ValidationError("password does not meet policy")
+
+    transaction:
+        account = accounts.findById(record.accountId)
+        account.passwordHash = hasher.hash(newPassword)
+        accounts.save(account)
+        resetTokens.consume(record.id)                  // single-use — cannot be replayed
+        credentialStore.revokeAllFor(account.id, exceptRef = null) // eject every session/token
+        audit.record(PASSWORD_RESET, account.id)
+    // no auto-login — client logs in fresh (config-overridable)
+```
+
+## changePassword  (authenticated — re-verify current password)
+
+```
+function changePassword(accountId, currentPassword, newPassword, currentCredential):
+    account = accounts.findById(accountId)
+    if not hasher.verify(currentPassword, account.passwordHash):   // re-authentication
+        audit.record(PASSWORD_CHANGE_FAILED, accountId)
+        fail Unauthorized("current password is incorrect")          // generic, timing-safe
+    if newPassword == currentPassword or not passwordMeetsPolicy(newPassword):
+        fail ValidationError("choose a different, policy-compliant password")
+
+    transaction:
+        account.passwordHash = hasher.hash(newPassword)
+        accounts.save(account)
+        credentialStore.revokeAllFor(accountId, exceptRef = currentCredential) // keep this session
+        audit.record(PASSWORD_CHANGED, accountId)
+```
+
 Constants/config: `DUMMY_HASH` (fixed valid-shaped hash for timing safety),
-`passwordMeetsPolicy` (min length etc. from config), credential lifetimes (from config).
+`passwordMeetsPolicy` (min length etc. from config), credential lifetimes (from config),
+`RESET_TTL` (reset-token lifetime, from config). `hashToken()` is a **fast** hash
+(e.g. SHA-256), not the slow password KDF: the reset token is already high-entropy, so it
+needs no key-stretching — and storing only its hash means a leaked `PASSWORD_RESET` row
+can't be replayed.

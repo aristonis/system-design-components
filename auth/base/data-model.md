@@ -12,6 +12,7 @@ erDiagram
     ACCOUNT ||--o{ SESSION : "has"
     ACCOUNT ||--o{ API_TOKEN : "has"
     ACCOUNT ||--o{ AUTH_EVENT : "generates"
+    ACCOUNT ||--o{ PASSWORD_RESET : "has"
 
     ACCOUNT {
       OpaqueId id PK
@@ -43,10 +44,19 @@ erDiagram
       datetime expires_at
       datetime revoked_at
     }
+    PASSWORD_RESET {
+      OpaqueId id PK
+      OpaqueId account_id FK
+      string   token_hash UK
+      string   channel "email | sms"
+      datetime expires_at
+      datetime consumed_at "nullable — set on first use"
+      datetime created_at
+    }
     AUTH_EVENT {
       OpaqueId id PK
       OpaqueId account_id FK "nullable"
-      string   type "register | login_success | login_failure | login_blocked | logout"
+      string   type "register | login_success | login_failure | login_blocked | logout | password_reset_requested | password_reset | password_changed"
       string   channel "web | api"
       string   ip
       datetime created_at
@@ -90,3 +100,8 @@ a real need appears — not now.)
 - `AUTH_EVENT` is included for completeness; auditing is cross-cutting and may move to
   its own component later.
 - `id` is opaque / non-enumerable everywhere (no raw auto-increment exposed).
+- `PASSWORD_RESET.token_hash` stores the **hash** of the reset secret; the raw token is
+  delivered **out-of-band once** and never stored or returned in a response.
+- A reset is **usable** only while `consumed_at IS NULL` **and** `expires_at > now`;
+  resetting **consumes** the row and **revokes** the account's `SESSION` + `API_TOKEN`
+  rows. Change-password revokes the same, **except** the current credential.

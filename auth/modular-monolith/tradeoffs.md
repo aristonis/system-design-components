@@ -21,6 +21,17 @@
   into Auth's tables — only the facade + code review do.
 - **Single deploy cadence:** shipping Auth means redeploying the whole app.
 
+## Password ops at Level 1
+- **Revocation is a local delete:** reset / change call `revokeAllFor` — one `UPDATE` over
+  the account's session/token rows, instantly effective. Enjoy it; Level 3 makes this the
+  hard part.
+- **The out-of-band send is the one non-transactional step:** the token row and the
+  email/SMS can't share a transaction. Commit the row **then** send — a failed send just
+  means no email (the user retries), never a live token without a row. (A real
+  outbox/queue makes this reliable; noted, not built.)
+- **Reset token reuses the bearer-token pattern:** high-entropy secret, stored as a fast
+  hash, shown once — no new crypto, just a new table.
+
 ## When Level 1 is the right choice
 - Early product, one team, modest load. Most systems should **start here and stay
   longer than they expect** — the limits above are not yet real costs.
@@ -37,3 +48,6 @@
   Level 2, then a **network contract** at Level 3.
 - **Shared session state** is the first thing the network forces you to rethink —
   stateful session lookup gives way to a stateless token.
+- **Reset / change must revoke every credential** — trivial here (a DB delete), but it is
+  exactly what a **stateless token** can't do on demand at Level 3 without a denylist or
+  short TTL + refresh-token revocation. This is the canary for the L3 design.

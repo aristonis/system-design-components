@@ -64,3 +64,70 @@ sequenceDiagram
 - `Authenticator.logout(credential)`: `issuer.revoke(credential)` (invalidate session /
   revoke token row) in one transaction → `audit.record(logout)`.
 - Subsequent requests carrying the old credential resolve to "unauthenticated" → 401.
+
+## Forgot + Reset (PasswordManager)
+
+```mermaid
+---
+title: Auth — Level 1 Forgot + Reset (in-process — out-of-band send after commit)
+---
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant Ctl as Controller
+    participant P as PasswordManager
+    participant RL as RateLimiter
+    participant Repo as AccountRepository
+    participant RT as ResetTokenStore
+    participant N as Notifier
+    participant H as PasswordHasher
+    participant CS as CredentialStore
+    participant Log as AuditLog
+
+    rect rgb(245,245,245)
+    Note over C,Log: Forgot — request a reset (generic reply, no enumeration)
+    C->>Ctl: POST /forgot {identifier}
+    Ctl->>P: forgotPassword(identifier)
+    P->>RL: check(identifier, ip)
+    P->>Repo: findByIdentifier(identifier)
+    alt account exists
+        P->>RT: save(hash(rawToken), expiresAt)
+        P->>Log: record(password_reset_requested)
+        Note right of P: commit first, then send
+        P->>N: sendResetToken(account, rawToken)
+    else no account
+        Note right of P: do equal work, send nothing (timing-safe)
+    end
+    P-->>Ctl: generic ok
+    Ctl-->>C: 200 "if that account exists, we've sent instructions"
+    end
+
+    rect rgb(245,245,245)
+    Note over C,Log: Reset — consume the token (single-use)
+    C->>Ctl: POST /reset {token, newPassword}
+    Ctl->>P: resetPassword(token, newPassword)
+    P->>RT: findUsableByHash(hash(token))
+    alt token unusable (missing / expired / consumed)
+        P-->>Ctl: Error(400 generic)
+        Ctl-->>C: 400 invalid or expired token
+    else usable + new password valid
+        P->>H: hash(newPassword)
+        P->>Repo: save(account with new hash)
+        P->>RT: consume(token)
+        P->>CS: revokeAllFor(accountId)
+        P->>Log: record(password_reset)
+        P-->>Ctl: ok
+        Ctl-->>C: 200 reset done — please log in
+    end
+    end
+```
+
+## Change password (delta)
+- `PasswordManager.changePassword(accountId, current, newPassword, currentCredential)`:
+  load the account → `hasher.verify(current, account.hash)` (**re-authentication** —
+  generic, timing-safe error on mismatch) → validate new (policy, **new ≠ old**) → in one
+  transaction `hasher.hash`, `accounts.save`,
+  `credentialStore.revokeAllFor(accountId, exceptRef = currentCredential)` →
+  `audit.record(password_changed)`.
+- Same in-process shape as login, but **no out-of-band channel** — the user is already
+  authenticated; the proof is the **current password**, not a mailed token.

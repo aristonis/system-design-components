@@ -8,9 +8,10 @@ Authentication: **register / login / logout**. Web-only, two client channels
 
 ## Scope
 
-- **In:** register, login, logout.
-- **Out / separate components:** authorization (roles/permissions), rate-limiting (infra).
-- **Deferred:** reset password, email verification, 2FA, social login.
+- **In:** register, login, logout, forgot / reset password, change password.
+- **Out / separate components:** authorization (roles/permissions), rate-limiting (infra),
+  notification / out-of-band delivery (email / SMS).
+- **Deferred:** email verification, 2FA, social login.
 
 ## How to read it
 
@@ -31,9 +32,9 @@ is split and deployed*. Read `base/` first, then the levels in order.
 | [context.md](base/context.md) | environment, channels, the single-flow / per-channel auth model |
 | [user-stories.md](base/user-stories.md) | register / login / logout stories + non-functional requirements |
 | [use-case.md](base/use-case.md) | use-case diagram |
-| [crc-cards.md](base/crc-cards.md) | collaboration diagram + CRC cards |
-| [domain-model.md](base/domain-model.md) | class diagram (`Authenticator`, `CredentialIssuer`, `Identifier`, …) |
-| [data-model.md](base/data-model.md) | logical ER; single `ACCOUNT`; identifier backings A/B |
+| [crc-cards.md](base/crc-cards.md) | two collaboration boards (card-style) + message-oriented CRC cards |
+| [domain-model.md](base/domain-model.md) | class diagram (`Authenticator`, `PasswordManager`, `CredentialIssuer`, `ResetToken`, `Notifier`, …) |
+| [data-model.md](base/data-model.md) | logical ER; single `ACCOUNT`; `PASSWORD_RESET`; identifier backings A/B |
 | [glossary.md](base/glossary.md) | ubiquitous language |
 
 ## The three levels
@@ -53,9 +54,13 @@ Full comparison: [microservice/tradeoffs.md](microservice/tradeoffs.md).
 - **One login flow**, channel selects a **credential-issuance strategy** (session/token) from a registry — adding a channel is an insert, not an edit (OCP).
 - **Generalized identifier:** `findByIdentifier(identifier)` (email / username / NID); storage is the implementer's choice — inline (A) or `IDENTIFIER` table (B).
 - **Single `ACCOUNT`** — "admin" is a role owned by the separate Authorization component, not an Auth concern.
+- **Password ops live in a sibling `PasswordManager` service** sharing Auth's ports + new `ResetTokenStore` / `Notifier`. Forgot/reset = the **unauthenticated, out-of-band** recovery path (single-use hashed token, no enumeration); change = the **authenticated** path (re-verify current password). Both end by **revoking credentials** — the hard part at L3 (stateless JWT).
 - **Token mechanism evolves per level:** opaque server-stored token (L1/L2) → stateless JWT + refresh token (L3). This is the central monolith→microservice lesson.
 - **Cross-cutting deps referenced, not owned:** rate-limiting is its own infra component.
 
 ## Status
 
-Auth design complete and internally consistent across `base/` + all three levels.
+Complete across `base/` + all three levels: register / login / logout **and** password
+operations (forgot / reset / change). The 1→3 thread for passwords is "revoke every
+credential on reset" — a one-line DB delete at L1/L2, a stateful-plus-stateless eviction
+(refresh revoke + per-account cutoff event) at L3.

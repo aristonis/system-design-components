@@ -18,5 +18,11 @@ Shared terms (ubiquitous language) for the Auth component. One definition each.
 | **User enumeration** | Leaking whether an account exists via different responses/timing. Prevented on login. |
 | **Opaque id** | A public identifier that is non-guessable and non-sequential. |
 | **Rate limiting** | Throttling attempts per identity / IP. Owned by the `rate-limiting/` component. |
-| **Audit log** | Record of auth events (register / login / logout) for observability. |
+| **Audit log** | Record of auth events (register / login / logout / password reset-request / reset / change) for observability. |
 | **Identity provider** | The source of identities the system authenticates against (the account store). |
+| **PasswordManager** | The service owning forgot / reset / change password; sibling to the Authenticator, sharing the same boundary ports plus `ResetTokenStore` + `Notifier`. |
+| **Account recovery** | Regaining access *without* the old password, via an out-of-band proof: forgot (request) → reset (consume). |
+| **Reset token** | A single-use, time-limited recovery secret bound to one account; stored **hashed**, delivered out-of-band, consumed on first use. |
+| **Out-of-band channel** | A delivery path separate from the login channel (email / SMS) used only to hand the user a recovery secret; never carries a password. |
+| **Re-authentication** | Re-proving identity with the **current password** for a sensitive action (change-password), even inside an active session. |
+| **Single-use** | Valid for exactly one successful use, then consumed — the reset token's lifecycle. |

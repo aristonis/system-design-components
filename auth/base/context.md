@@ -6,9 +6,9 @@ and *who/what* talks to it, not *how* the code is split (that is each level's jo
 
 ## Scope (frozen)
 
-- **In:** Register, Login, Logout
-- **Out / deferred:** authorization (separate `authorization/` component), reset
-  password, email verification, 2FA, social login
+- **In:** Register, Login, Logout, Forgot / Reset password, Change password
+- **Out / deferred:** authorization (separate `authorization/` component), email
+  verification, 2FA, social login
 - Detailed behaviour + acceptance criteria live in `user-stories.md`.
 
 ## Application environment
@@ -26,7 +26,7 @@ and *who/what* talks to it, not *how* the code is split (that is each level's jo
 |---|---|
 | **User** | A registered person using the application. |
 | **Admin** | A privileged person. Authenticates like a User; the privilege itself is an authorization concern (separate component). |
-| **Guest** | Not authenticated yet. Can register and log in. |
+| **Guest** | Not authenticated yet. Can register, log in, and run forgot / reset password (locked out, holding no valid credential). |
 
 ## Client channels
 
@@ -43,7 +43,7 @@ credential Login issues:
 
 ```mermaid
 ---
-title: Auth — System Context (Web-only, two channels)
+title: Auth — System Context (two login channels + out-of-band recovery)
 ---
 flowchart LR
     User["User"]
@@ -54,9 +54,10 @@ flowchart LR
       ApiClient["API / SPA Client<br/>bearer token"]
     end
 
-    App["Application — Auth component<br/>register / login / logout"]
+    App["Application — Auth component<br/>register / login / logout<br/>forgot / reset / change password"]
     Identity[("Identity &amp; Credential Store")]
     State[("Session / Token Store")]
+    Notifier[/"Out-of-band Notifier<br/>email / SMS"/]
 
     User --> Browser
     User --> ApiClient
@@ -66,7 +67,17 @@ flowchart LR
     ApiClient -->|"HTTPS, Bearer"| App
     App --> Identity
     App --> State
+    App -->|"reset token"| Notifier
+    Notifier -. "reset link / OTP" .-> User
 ```
+
+### Out-of-band channel (account recovery)
+
+Forgot-password adds a **third channel that is not a login channel**: a one-way
+**out-of-band** path (email / SMS) used only to hand the user a **reset token**. It
+proves control of a registered contact, **never carries a password**, and is owned by
+the **Notifier** dependency. Web / API issue *credentials*; the out-of-band channel
+delivers a *recovery secret*.
 
 ## Authentication model (the key decision)
 
@@ -109,7 +120,8 @@ components never depend on Auth.
 
 | Dependency | Type | What Auth uses it for | Owned by |
 |---|---|---|---|
-| **Rate-Limiting** | infra component (separate) | throttle login / register / logout (per-identity + per-IP) | `rate-limiting/` (to be designed) |
+| **Rate-Limiting** | infra component (separate) | throttle login / register / logout / forgot-password (per-identity + per-IP) | `rate-limiting/` (to be designed) |
+| **Notifier (out-of-band)** | infra component (separate) | deliver the reset link / OTP via email / SMS (forgot-password) | notification component (to be designed) |
 
 Policies that stay **inside** Auth (its own domain, expressed as config, not hardcoded):
 
